@@ -1,0 +1,89 @@
+From 5fb9b445d06e9138ad7d3d1d55b779cf44325f4c Mon Sep 17 00:00:00 2001
+From: LoveSy <shana@zju.edu.cn>
+Date: Tue, 9 Apr 2024 14:35:33 +0800
+Subject: [PATCH] refine RAII file & dir
+
+since llvm 17 we can define lambdas in unevaluated contexts,
+we can let std::unique_ptr to create a lambda instance for us
+---
+ native/src/base/files.cpp  |  8 --------
+ native/src/base/files.hpp  | 18 ++++++++----------
+ native/src/base/stream.cpp |  2 +-
+ 3 files changed, 9 insertions(+), 19 deletions(-)
+
+diff --git a/native/src/base/files.cpp b/native/src/base/files.cpp
+index 8b0c31231952..b03288b8e87c 100644
+--- a/native/src/base/files.cpp
++++ b/native/src/base/files.cpp
+@@ -101,14 +101,6 @@ void parse_prop_file(const char *file, const function<bool(string_view, string_v
+         parse_prop_file(fp.get(), fn);
+ }
+ 
+-sDIR make_dir(DIR *dp) {
+-    return sDIR(dp, [](DIR *dp){ return dp ? closedir(dp) : 1; });
+-}
+-
+-sFILE make_file(FILE *fp) {
+-    return sFILE(fp, [](FILE *fp){ return fp ? fclose(fp) : 1; });
+-}
+-
+ mmap_data::mmap_data(const char *name, bool rw) {
+     auto slice = rust::map_file(name, rw);
+     if (!slice.empty()) {
+diff --git a/native/src/base/files.hpp b/native/src/base/files.hpp
+index 03fd9bada231..496eb32a0aa0 100644
+--- a/native/src/base/files.hpp
++++ b/native/src/base/files.hpp
+@@ -62,31 +62,29 @@ void parse_prop_file(const char *file,
+         const std::function<bool(std::string_view, std::string_view)> &fn);
+ std::string resolve_preinit_dir(const char *base_dir);
+ 
+-using sFILE = std::unique_ptr<FILE, decltype(&fclose)>;
+-using sDIR = std::unique_ptr<DIR, decltype(&closedir)>;
+-sDIR make_dir(DIR *dp);
+-sFILE make_file(FILE *fp);
++using sFILE = std::unique_ptr<FILE, decltype([](FILE *f) { fclose(f); })>;
++using sDIR = std::unique_ptr<DIR, decltype([](DIR *d) { closedir(d); })>;
+ 
+ static inline sDIR open_dir(const char *path) {
+-    return make_dir(opendir(path));
++    return sDIR{opendir(path)};
+ }
+ 
+ static inline sDIR xopen_dir(const char *path) {
+-    return make_dir(xopendir(path));
++    return sDIR{xopendir(path)};
+ }
+ 
+ static inline sDIR xopen_dir(int dirfd) {
+-    return make_dir(xfdopendir(dirfd));
++    return sDIR{xfdopendir(dirfd)};
+ }
+ 
+ static inline sFILE open_file(const char *path, const char *mode) {
+-    return make_file(fopen(path, mode));
++    return sFILE{fopen(path, mode)};
+ }
+ 
+ static inline sFILE xopen_file(const char *path, const char *mode) {
+-    return make_file(xfopen(path, mode));
++    return sFILE{xfopen(path, mode)};
+ }
+ 
+ static inline sFILE xopen_file(int fd, const char *mode) {
+-    return make_file(xfdopen(fd, mode));
++    return sFILE{xfdopen(fd, mode)};
+ }
+diff --git a/native/src/base/stream.cpp b/native/src/base/stream.cpp
+index c276ff6ca011..fb041c296aa2 100644
+--- a/native/src/base/stream.cpp
++++ b/native/src/base/stream.cpp
+@@ -25,7 +25,7 @@ static int strm_close(void *v) {
+ }
+ 
+ sFILE make_stream_fp(stream_ptr &&strm) {
+-    auto fp = make_file(funopen(strm.release(), strm_read, strm_write, nullptr, strm_close));
++    sFILE fp{funopen(strm.release(), strm_read, strm_write, nullptr, strm_close)};
+     setbuf(fp.get(), nullptr);
+     return fp;
+ }
